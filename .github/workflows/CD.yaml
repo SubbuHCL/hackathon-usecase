@@ -1,0 +1,40 @@
+name: Continuous Deployment
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}  # Run only if CI succeeded
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    # Setup gcloud CLI
+    - id: 'auth'
+      name: 'Authenticate to Google Cloud'
+      uses: 'google-github-actions/auth@v1'
+      with:
+        credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+    
+    # Get the GKE credentials
+    - name: 'Set up GKE credentials'
+      uses: 'google-github-actions/get-gke-credentials@v1'
+      with:
+        cluster_name: 'HCLhackathon-gke-cluster'
+        location: 'us-central1-a'
+        project_id: 'HCL-hackathon'
+    
+    # Deploy the manifest
+    - name: 'Deploy to GKE'
+      run: |
+        kubectl apply -f deployment-manifest.yaml

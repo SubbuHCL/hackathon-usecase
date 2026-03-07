@@ -1,0 +1,112 @@
+name: terraform-CICD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    name: Terraform fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Check formatting (terraform fmt)
+        run: |
+          terraform fmt -check -diff -recursive
+
+  lint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install TFLint
+        uses: terraform-linters/tflint-action@v1
+        with:
+          # adjust version if needed
+          version: latest
+
+      - name: Run TFLint
+        run: |
+          # tflint will automatically find .tf files
+          tflint --init || true
+          tflint
+
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: [fmt, lint]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan (save binary plan)
+        run: terraform plan -out=tfplan.binary
+
+      - name: Convert plan to human readable
+        run: terraform show -no-color tfplan.binary > plan.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            tfplan.binary
+            plan.txt
+
+  apply:
+    name: Terraform Apply (requires approval)
+    runs-on: ubuntu-latest
+    needs: plan
+    # Only allow deploys from main pushes or manual dispatch
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+    environment:
+      name: production
+      # If repo/environment protection rules are configured, this will prompt reviewers/approval.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: ./plan-artifact
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Show plan (for logs)
+        run: cat plan-artifact/plan.txt || true
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Apply saved plan
+        run: terraform apply -input=false plan-artifact/tfplan.binary
+        

@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hackathon-namespace
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: application-service
+  namespace: hackathon-namespace
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: application-service
+  template:
+    metadata:
+      labels:
+        app: application-service
+    spec:
+      containers:
+      - name: application-service
+        image: hclhackathon/HCLhackathon:latest
+        ports:
+        - containerPort: 3000
+        command: ["node", "application-service/src/index.js"]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patient-service
+  namespace: hackathon-namespace
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: patient-service
+  template:
+    metadata:
+      labels:
+        app: patient-service
+    spec:
+      containers:
+      - name: patient-service
+        image: hclhackathon/HCLhackathon:latest
+        ports:
+        - containerPort: 3001
+        command: ["node", "patient-service/src/index.js"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: application-service
+  namespace: hackathon-namespace
+spec:
+  selector:
+    app: application-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: nginx
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patient-service
+  namespace: hackathon-namespace
+spec:
+  selector:
+    app: patient-service
+  ports:
+    - protocol: TCP
+      port: 81
+      targetPort: 3001
+  type: ClusterIP

@@ -1,0 +1,62 @@
+name: CI Pipeline
+
+on:
+  workflow_run:
+    workflows: ["terraform-CICD"]
+    types:
+      - completed
+
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  IMAGE_NAME: HCLhackathon
+  GAR_REGISTRY: hclhackathon-docker.pkg.dev
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Google Cloud Auth
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+    - name: Docker Login to GAR
+      uses: docker/login-action@v2
+      with:
+        registry: 
+        username: base64_json_key
+        password: ${{ secrets.GCP_CREDENTIALS }}
+
+    - name: Build Docker Image
+      run: |
+        docker build -t $GAR_REGISTRY/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }} .
+
+    - name: Scan Image for Vulnerabilities
+      run: |
+        docker scan $GAR_REGISTRY/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }} > vulnerability-report.txt
+        if grep -i "critical" vulnerability-report.txt; then
+          echo "Critical vulnerabilities found!"
+          exit 1
+        fi
+
+    - name: Push Docker Image
+      if: success()
+      run: |
+        docker push $GCR_REGISTRY/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }}
+
+    - name: Upload Vulnerability Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: vulnerability-report
+        path: vulnerability-report.txt
