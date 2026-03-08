@@ -1,0 +1,58 @@
+name: CI-CD GKE Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: your-gcp-project-id
+  GKE_CLUSTER: my-gke-cluster
+  GKE_ZONE: asia-south1-a
+  IMAGE: microservice-app
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    # Authenticate to GCP
+    - name: Setup GCP Authentication
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    # Configure Docker to use gcloud
+    - name: Configure Docker
+      run: |
+        gcloud auth configure-docker
+
+    # Build Docker Image
+    - name: Build Docker Image
+      run: |
+        docker build -t gcr.io/$PROJECT_ID/$IMAGE:${{ github.sha }} .
+
+    # Push to GCR
+    - name: Push Docker Image
+      run: |
+        docker push gcr.io/$PROJECT_ID/$IMAGE:${{ github.sha }}
+
+    # Get GKE Credentials
+    - name: Get GKE Credentials
+      run: |
+        gcloud container clusters get-credentials $GKE_CLUSTER \
+          --zone $GKE_ZONE \
+          --project $PROJECT_ID
+
+    # Deploy using Helm
+    - name: Deploy to GKE
+      run: |
+        helm upgrade --install microservice-release ./helm \
+          --set image.repository=gcr.io/$PROJECT_ID/$IMAGE \
+          --set image.tag=${{ github.sha }}
