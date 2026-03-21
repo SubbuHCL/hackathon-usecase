@@ -1,0 +1,54 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: healthcare-app-ingress
+  namespace: healthcare-app
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "healthcare-app-ip"
+    networking.gke.io/managed-certificates: "healthcare-app-cert"
+    kubernetes.io/ingress.allow-http: "true"
+spec:
+  rules:
+  - host: "healthcare-app.example.com"
+    http:
+      paths:
+      - path: /api/patients/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: patient-service
+            port:
+              number: 80
+      - path: /api/appointments/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: appointment-service
+            port:
+              number: 80
+      - path: /api/orders/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: order-service
+            port:
+              number: 80
+---
+apiVersion: compute.cnrm.cloud.google.com/v1beta1
+kind: ComputeAddress
+metadata:
+  name: healthcare-app-ip
+  namespace: healthcare-app
+spec:
+  addressType: EXTERNAL
+  location: global
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: healthcare-app-cert
+  namespace: healthcare-app
+spec:
+  domains:
+    - healthcare-app.example.com
