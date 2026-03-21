@@ -2,11 +2,23 @@
 # main.tf - GKE setup in existing GCP project #
 ###############################################
 
-# (All resources are loaded automatically since we split them into .tf files)
-# This file can remain minimal but it’s a good place to define overall dependencies or output grouping.
-
+# Configure Terraform with GCS backend for state management
+# Replace the bucket name with your actual GCS bucket
 terraform {
-  backend "local" {}
+  required_version = ">= 1.4.0"
+  
+  # Use GCS for remote state storage
+  # Uncomment the backend block for production use
+  # For local development, comment it out
+  backend "gcs" {
+    bucket  = "hackathon-terraform-state"
+    prefix  = "gke/prod"
+  }
+  
+  # Alternatively, for local testing use:
+  # backend "local" {
+  #   path = "terraform.tfstate"
+  # }
 }
 
 

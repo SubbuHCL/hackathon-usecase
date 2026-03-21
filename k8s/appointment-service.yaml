@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: patient-service
+  name: appointment-service
   namespace: healthcare-app
   labels:
-    app: patient-service
+    app: appointment-service
     version: v1
 spec:
   replicas: 2
@@ -15,30 +15,30 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      app: patient-service
+      app: appointment-service
   template:
     metadata:
       labels:
-        app: patient-service
+        app: appointment-service
         version: v1
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "3000"
+        prometheus.io/port: "3001"
     spec:
-      serviceAccountName: patient-service-sa
+      serviceAccountName: appointment-service-sa
       containers:
-      - name: patient-service
-        image: gcr.io/PROJECT_ID/patient-service:latest
+      - name: appointment-service
+        image: gcr.io/PROJECT_ID/appointment-service:latest
         imagePullPolicy: Always
         ports:
         - name: http
-          containerPort: 3000
+          containerPort: 3001
           protocol: TCP
         env:
         - name: NODE_ENV
           value: "production"
         - name: SERVICE_PORT
-          value: "3000"
+          value: "3001"
         livenessProbe:
           httpGet:
             path: /health
@@ -70,25 +70,25 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: patient-service
+  name: appointment-service
   namespace: healthcare-app
   labels:
-    app: patient-service
+    app: appointment-service
 spec:
   type: ClusterIP
   selector:
-    app: patient-service
+    app: appointment-service
   ports:
   - name: http
     port: 80
-    targetPort: 3000
+    targetPort: 3001
     protocol: TCP
   sessionAffinity: None
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: patient-service-sa
+  name: appointment-service-sa
   namespace: healthcare-app
   labels:
-    app: patient-service
+    app: appointment-service

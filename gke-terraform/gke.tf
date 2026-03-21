@@ -43,13 +43,19 @@ resource "google_container_node_pool" "primary_pool" {
     disk_type     = "pd-standard"  # 🔽 Optional: use cheaper non-SSD disk
     oauth_scopes  = ["https://www.googleapis.com/auth/cloud-platform"]
 
-    # Use a dedicated node service account if desired
-    # service_account = google_service_account.node_sa.email
+    # Use the dedicated node service account
+    service_account = google_service_account.node_sa.email
+    
+    # Labels for better organization
+    labels = {
+      environment = "prod"
+      managed-by  = "terraform"
+    }
   }
 
   autoscaling {
     min_node_count = 1
-    max_node_count = 1
+    max_node_count = 3
   }
 
   management {
