@@ -1,0 +1,38 @@
+# Container Images Configuration
+# This file contains all image references for different environments
+
+# Development Environment
+dev:
+  patient-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-dev-patient-service
+    tag: latest
+  application-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-dev-application-service
+    tag: latest
+  order-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-dev-order-service
+    tag: latest
+
+# UAT Environment
+uat:
+  patient-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-uat-patient-service
+    tag: v1.0.0
+  application-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-uat-application-service
+    tag: v1.0.0
+  order-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-uat-order-service
+    tag: v1.0.0
+
+# Production Environment
+prod:
+  patient-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-prod-patient-service
+    tag: v1.0.0
+  application-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-prod-application-service
+    tag: v1.0.0
+  order-service:
+    repository: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/microservices-prod-order-service
+    tag: v1.0.0

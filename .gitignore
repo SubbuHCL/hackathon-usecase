@@ -2,3 +2,21 @@
 .class*
 .jar
 .ear
+
+# Maven build output
+target/
+
+# Terraform
+*.tfstate
+.tfstate.
+.terraform/
+.terraform.lock.hcl
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Node.js
+node_modules/
+npm-debug.log*

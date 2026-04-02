@@ -1,0 +1,206 @@
+name: Deploy to Kubernetes
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+        default: 'deploy'
+      image_tag:
+        description: 'Image tag (for deploy: override tag, for rollback: previous version tag)'
+        required: false
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (Bootstrap)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
+          role-session-name: GitHubActions-K8s-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Make Scripts Executable
+        run: chmod +x scripts/*.sh
+
+      - name: AWS Authentication and Setup
+        run: |
+          ./scripts/aws-ecr-login.sh ${{ github.event.inputs.environment }} ${{ env.AWS_REGION }}
+
+      - name: Setup kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Configure kubectl for EKS
+        run: |
+          CLUSTER_NAME="microservices-${{ github.event.inputs.environment }}-eks-cluster"
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name $CLUSTER_NAME
+          kubectl get nodes
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Override Image Tag (if provided)
+        if: github.event.inputs.image_tag != ''
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          TAG="${{ github.event.inputs.image_tag }}"
+          
+          # Update all services with the same tag
+          yq eval ".${ENV}.patient-service.tag = \"${TAG}\"" -i deployments/images.yaml
+          yq eval ".${ENV}.application-service.tag = \"${TAG}\"" -i deployments/images.yaml
+          yq eval ".${ENV}.order-service.tag = \"${TAG}\"" -i deployments/images.yaml
+
+      - name: Deploy All Services
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ENV="${{ github.event.inputs.environment }}"
+          
+          echo "Deploying all services to environment: $ENV"
+          echo ""
+          
+          # Patient Service
+          PATIENT_REPO=$(yq eval ".${ENV}.patient-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+          PATIENT_TAG=$(yq eval ".${ENV}.patient-service.tag" deployments/images.yaml)
+          echo "Patient Service: $PATIENT_REPO:$PATIENT_TAG"
+          sed -e "s|image: patient-service:latest|image: $PATIENT_REPO:$PATIENT_TAG|g" \
+              -e "s|environment: dev|environment: $ENV|g" \
+              "deployments/base/patient-service.yaml" | kubectl apply -f -
+          
+          # Application Service
+          APPLICATION_REPO=$(yq eval ".${ENV}.application-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+          APPLICATION_TAG=$(yq eval ".${ENV}.application-service.tag" deployments/images.yaml)
+          echo "Application Service: $APPLICATION_REPO:$APPLICATION_TAG"
+          sed -e "s|image: application-service:latest|image: $APPLICATION_REPO:$APPLICATION_TAG|g" \
+              -e "s|environment: dev|environment: $ENV|g" \
+              "deployments/base/application-service.yaml" | kubectl apply -f -
+          
+          # Order Service
+          ORDER_REPO=$(yq eval ".${ENV}.order-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+          ORDER_TAG=$(yq eval ".${ENV}.order-service.tag" deployments/images.yaml)
+          echo "Order Service: $ORDER_REPO:$ORDER_TAG"
+          sed -e "s|image: order-service:latest|image: $ORDER_REPO:$ORDER_TAG|g" \
+              -e "s|environment: dev|environment: $ENV|g" \
+              "deployments/base/order-service.yaml" | kubectl apply -f -
+          
+          # Ingress
+          echo "Deploying ingress..."
+          sed -e "s|Environment=dev|Environment=$ENV|g" \
+              "deployments/base/ingress.yaml" | kubectl apply -f -
+
+      - name: Rollback All Services
+        if: github.event.inputs.action == 'rollback'
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          
+          if [ -z "${{ github.event.inputs.image_tag }}" ]; then
+            echo "Rolling back to previous revision using kubectl rollout undo..."
+            kubectl rollout undo deployment/patient-service
+            kubectl rollout undo deployment/application-service
+            kubectl rollout undo deployment/order-service
+          else
+            echo "Rolling back to specific image tag: ${{ github.event.inputs.image_tag }}"
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            TAG="${{ github.event.inputs.image_tag }}"
+            
+            # Patient Service
+            PATIENT_REPO=$(yq eval ".${ENV}.patient-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+            echo "Rolling back Patient Service to: $PATIENT_REPO:$TAG"
+            kubectl set image deployment/patient-service patient-service=$PATIENT_REPO:$TAG
+            
+            # Application Service
+            APPLICATION_REPO=$(yq eval ".${ENV}.application-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+            echo "Rolling back Application Service to: $APPLICATION_REPO:$TAG"
+            kubectl set image deployment/application-service application-service=$APPLICATION_REPO:$TAG
+            
+            # Order Service
+            ORDER_REPO=$(yq eval ".${ENV}.order-service.repository" deployments/images.yaml | sed "s/<ACCOUNT_ID>/$ACCOUNT_ID/g")
+            echo "Rolling back Order Service to: $ORDER_REPO:$TAG"
+            kubectl set image deployment/order-service order-service=$ORDER_REPO:$TAG
+          fi
+
+      - name: Wait for Deployment
+        run: |
+          echo "Waiting for all deployments to complete..."
+          kubectl rollout status deployment/patient-service --timeout=5m
+          kubectl rollout status deployment/application-service --timeout=5m
+          kubectl rollout status deployment/order-service --timeout=5m
+
+      - name: Get Deployment Status
+        if: always()
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          if [ "$ACTION" == "rollback" ]; then
+            echo "## Rollback Status - ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Deployment Status - ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Services:** All (patient-service, application-service, order-service)" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tag:** ${{ github.event.inputs.image_tag || 'from images.yaml / previous revision' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Deployments" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          kubectl get deployments >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pods" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Ingress" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          kubectl get ingress >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Get Service URL
+        run: |
+          LB_URL=$(kubectl get ingress microservices-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Pending...")
+          echo "## Service URLs - ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Load Balancer:** \`$LB_URL\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Endpoints:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Patient Service: http://$LB_URL/patients" >> $GITHUB_STEP_SUMMARY
+          echo "- Application Service: http://$LB_URL/appointments" >> $GITHUB_STEP_SUMMARY
+          echo "- Order Service: http://$LB_URL/orders" >> $GITHUB_STEP_SUMMARY
