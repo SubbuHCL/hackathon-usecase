@@ -1,0 +1,215 @@
+name: Terraform Plan on PR
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - uat
+      - main
+    paths:
+      - 'terraform/**/*.tf'
+      - 'terraform/**/*.tfvars'
+      - '.github/workflows/terraform-plan-pr.yml'
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: microservices
+  ECR_REPOS: patient-service,application-service,order-service
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Determine Environment
+        id: env
+        run: |
+          if [ "${{ github.base_ref }}" == "dev" ]; then
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          elif [ "${{ github.base_ref }}" == "uat" ]; then
+            echo "environment=uat" >> $GITHUB_OUTPUT
+          elif [ "${{ github.base_ref }}" == "main" ]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure AWS Credentials (Bootstrap)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
+          role-session-name: GitHubActions-TF-Plan-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Retrieve Secrets from AWS Secrets Manager
+        id: secrets
+        run: |
+          SECRET_NAME="github-actions/${{ steps.env.outputs.environment }}/aws-credentials"
+          
+          echo "Retrieving secrets for ${{ steps.env.outputs.environment }} environment"
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_NAME" \
+            --region ${{ env.AWS_REGION }} \
+            --query SecretString \
+            --output text)
+          
+          export AWS_ACCESS_KEY_ID=$(echo $SECRET_JSON | jq -r '.aws_access_key_id')
+          export AWS_SECRET_ACCESS_KEY=$(echo $SECRET_JSON | jq -r '.aws_secret_access_key')
+          
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          
+          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials (Main)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        id: fmt
+        run: |
+          cd terraform
+          terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: |
+          cd terraform
+          terraform validate -no-color
+        continue-on-error: true
+
+      - name: Generate Terraform Variables
+        run: |
+          cd terraform
+          cat > terraform.tfvars << EOF
+          environment = "${{ steps.env.outputs.environment }}"
+          project_name = "${{ env.PROJECT_NAME }}"
+          aws_region = "${{ env.AWS_REGION }}"
+          EOF
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd terraform
+          terraform plan -no-color -out=tfplan
+        continue-on-error: true
+
+      - name: Save Plan Output
+        if: always()
+        run: |
+          cd terraform
+          terraform show -no-color tfplan > plan-output.txt 2>&1 || echo "No plan to show"
+
+      - name: Comment PR with Plan
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('terraform/plan-output.txt', 'utf8');
+            
+            let statusIcon = '✅';
+            let statusText = 'Success';
+            
+            if ('${{ steps.fmt.outcome }}' === 'failure') {
+              statusIcon = '❌';
+              statusText = 'Format Check Failed';
+            } else if ('${{ steps.validate.outcome }}' === 'failure') {
+              statusIcon = '❌';
+              statusText = 'Validation Failed';
+            } else if ('${{ steps.plan.outcome }}' === 'failure') {
+              statusIcon = '❌';
+              statusText = 'Plan Failed';
+            }
+            
+            const output = `#### Terraform Plan ${statusIcon} - ${statusText}
+            
+            **Environment:** \`${{ steps.env.outputs.environment }}\`
+            **Format Check:** \`${{ steps.fmt.outcome }}\`
+            **Validation:** \`${{ steps.validate.outcome }}\`
+            **Plan:** \`${{ steps.plan.outcome }}\`
+            
+            <details><summary>Show Plan Output</summary>
+            
+            \`\`\`terraform
+            ${planOutput.slice(0, 65000)}
+            \`\`\`
+            
+            </details>
+            
+            ${statusIcon === '❌' && '${{ steps.fmt.outcome }}' === 'failure' ? `
+            ⚠️ **Terraform files need formatting!**
+            
+            Run the following command to fix:
+            \`\`\`bash
+            cd terraform
+            terraform fmt -recursive
+            \`\`\`
+            ` : ''}
+            
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`, Workflow: \`${{ github.workflow }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ steps.env.outputs.environment }}-pr-${{ github.event.pull_request.number }}
+          path: |
+            terraform/tfplan
+            terraform/plan-output.txt
+          retention-days: 30
+
+      - name: Fail if Checks Failed
+        if: steps.fmt.outcome == 'failure' || steps.validate.outcome == 'failure' || steps.plan.outcome == 'failure'
+        run: |
+          echo "Terraform checks failed!"
+          exit 1
+
+      - name: Create Job Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** \`${{ steps.env.outputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Format Check:** \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Validation:** \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Plan:** \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.fmt.outcome }}" == "success" ] && [ "${{ steps.validate.outcome }}" == "success" ] && [ "${{ steps.plan.outcome }}" == "success" ]; then
+            echo "✅ All checks passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some checks failed. See details above." >> $GITHUB_STEP_SUMMARY
+          fi

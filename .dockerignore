@@ -1,0 +1,51 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Java/Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+mvnw
+mvnw.cmd
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test coverage
+coverage/
+*.lcov
+
+# Build artifacts
+dist/
+build/

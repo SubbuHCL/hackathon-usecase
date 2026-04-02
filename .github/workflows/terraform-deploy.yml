@@ -1,0 +1,120 @@
+name: Terraform Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: microservices
+  ECR_REPOS: patient-service,application-service,order-service
+
+jobs:
+  terraform:
+    name: Terraform Deploy - ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (Bootstrap)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
+          role-session-name: GitHubActions-Terraform-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Retrieve Secrets from AWS Secrets Manager
+        run: |
+          SECRET_NAME="github-actions/${{ github.event.inputs.environment }}/aws-credentials"
+          
+          echo "Retrieving secrets for ${{ github.event.inputs.environment }} environment"
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_NAME" \
+            --region ${{ env.AWS_REGION }} \
+            --query SecretString \
+            --output text)
+          
+          export AWS_ACCESS_KEY_ID=$(echo $SECRET_JSON | jq -r '.aws_access_key_id')
+          export AWS_SECRET_ACCESS_KEY=$(echo $SECRET_JSON | jq -r '.aws_secret_access_key')
+          
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          
+          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials (Main)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          terraform_wrapper: false
+
+      - name: Setup kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Make Scripts Executable
+        run: chmod +x scripts/*.sh
+
+      - name: Run CI/CD Pipeline
+        run: |
+          cd scripts
+          ./cicd-pipeline.sh \
+            "deploy" \
+            "${{ github.event.inputs.environment }}" \
+            "${{ env.PROJECT_NAME }}" \
+            "${{ env.AWS_REGION }}" \
+            "${{ env.ECR_REPOS }}"
+
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-deploy-${{ github.event.inputs.environment }}-${{ github.run_number }}
+          path: |
+            terraform/tfplan
+            terraform/plan-output.txt
+            terraform/terraform.tfvars
+            terraform/outputs.txt
+            terraform/ecr_repos.json
+            terraform/deployment-summary.md
+            terraform/deployment-info.txt
+          retention-days: ${{ github.event.inputs.environment == 'prod' && 90 || 30 }}
+
+      - name: Create Job Summary
+        if: always()
+        run: |
+          echo "## Terraform Deploy - ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** \`${{ github.event.inputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** \`${{ env.AWS_REGION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f terraform/deployment-summary.md ]; then
+            cat terraform/deployment-summary.md >> $GITHUB_STEP_SUMMARY
+          fi
